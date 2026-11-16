@@ -39,7 +39,7 @@ persistence: none
 # It does not decide who owns the app, and nothing in this file does. Pippa
 # Labs created this repository for your Pippa account, so every app published
 # from it is yours. docs/REVIEW_AND_SHARING.md is the whole story.
-app_author_name: ""
+app_author_name: "Quiet Comet"
 
 app:
   # Filled in for you. A new repository replaces this placeholder within a
@@ -55,7 +55,7 @@ app:
   # Hyphens are not valid in an app id anywhere. `git remote get-url origin`
   # tells you the repository name.
   id: hack.own_0c97
-  name: Days Until
+  name: Day Countdown
   # The version you are pushing. Pippa keeps a copy of the code of every
   # version, so pushing a new version never changes an older one: the approved
   # version keeps working for everyone while you try the next.
@@ -76,7 +76,8 @@ app:
   # (the author name is `app_author_name` above) and splits on the first "by".
   summary: >-
     Works out how many days there are until a date you name, and says which
-    day of the week it falls on.
+    day of the week it falls on. It works everything out itself and sends
+    nothing anywhere.
 
 # Who can install it. `personal` means a person's own Pippa.
 agent_types:
@@ -100,13 +101,18 @@ agent_types:
 
 outcomes:
   - id: days.until
-    summary: Count the days between now and a date, and name the weekday
+    summary: Count the days left until a date, holiday or weekday, and say which day of the week it falls on
+    # Only the first four reach Pippa's first decision, so they cover both
+    # things the summary promises: the count, and the weekday.
     example_phrases:
       - how many days until
-      - how long until
+      - which day of the week is
       - how many sleeps until
-      - days left until
-      - what day of the week is
+      - how long is left until
+      - days to go until
+      - count down the days to
+      - how many days left before
+      - what day does it fall on
     # What Pippa extracts from the user's message and hands you. A model reads
     # `description` to do that extraction, so write it as an instruction to
     # whoever is filling the field in.
@@ -122,27 +128,36 @@ outcomes:
         type: string
         required: false
         description: >-
-          The target date, as the user wrote it — for example "25 December",
-          "2027-01-01" or "next Friday". If the message does not name a date,
-          return an empty string rather than guessing.
+          The date the user is counting down to, copied as they wrote it, with
+          the year if they gave one — for example "25 December", "2027-01-01",
+          "25/12/2026", "next Friday", "the 25th", "Christmas" or "Easter".
+          If the message does not name a date, return an empty string rather
+          than guessing.
       - name: timezone
         type: timezone
         required: false
-        description: The user's time zone, so "today" means their today.
+        description: >-
+          The user's time zone as an IANA name such as "Europe/London", so
+          "today" means their today. Only fill this in if the user's time zone
+          is actually known. Otherwise leave it out entirely: never guess one,
+          and never send a city name or an empty string.
     # What you promise to return. Returning anything else is refused; omitting
     # a declared field is refused too. Keep it small and specific.
     output:
       - name: days
         type: integer
-        description: How many whole days until the date. Negative if it has passed.
+        description: >-
+          How many whole days between today and the date. Never negative:
+          already_passed says whether they are days to go or days ago.
       - name: target_date
         type: string
-        description: The date you actually used, as YYYY-MM-DD.
+        description: The date actually counted to, as YYYY-MM-DD.
       - name: weekday
         type: string
-        description: The day of the week the date falls on.
+        description: The day of the week the date falls on, in English.
       - name: already_passed
         type: boolean
+        description: True if the date is in the past, so days counts days ago.
 
 # ── Things this example does NOT use ─────────────────────────────────────────
 #
