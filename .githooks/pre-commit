@@ -1,0 +1,179 @@
+#!/bin/sh
+# Stops a commit that would make an email address or a real name public.
+#
+# Everything committed here can end up public: the files, and the name and
+# email address on the commit itself, which stay in the history for good. So
+# this refuses a commit when
+#
+#   * its author or committer address is not a GitHub no-reply address
+#     (<id>+<login>@users.noreply.github.com, or GitHub's own `noreply`
+#     address at github.com, which it puts on the edits made on its
+#     website), or
+#   * its author or committer name is not the pseudonym in `app_author_name`
+#     in manifest.yaml, or, while that is still empty, no name is set for this
+#     repository at all, so that git would use this computer's own, or
+#   * a file it adds or changes contains an email address. Addresses at the
+#     domains reserved for examples (example.com, example.org, example.net,
+#     anything ending .example, .test, .invalid or .localhost) and no-reply
+#     addresses are fine: they cannot belong to anybody. Neither is a file
+#     name that only looks like one, such as a picture's logo@2x.png.
+#
+# The build checks the addresses too, but by then they have been pushed.
+#
+# Git never runs a hook that arrives with a clone. Claude switches this one on
+# in each copy of the repository (CLAUDE.md, step 1):
+#
+#     git config core.hooksPath .githooks
+#
+# POSIX sh and git only, so it runs wherever git does, Git for Windows
+# included. The four patterns below are the ones in scripts/check.py,
+# character for character; scripts/test_pre_commit.py checks that they stay so.
+
+email_re='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
+allowed_re='@(users\.noreply\.github\.com|([A-Za-z0-9-]+\.)*example\.(com|org|net)|([A-Za-z0-9-]+\.)*(example|test|invalid|localhost))$'
+file_suffix_re='\.(avif|bmp|cjs|css|csv|gif|heic|htm|html|ico|jpeg|jpg|js|json|jsx|lock|map|mjs|png|scss|svg|tif|tiff|toml|ts|tsx|txt|webp|whl|xml|yaml|yml)$'
+noreply_re='^([^@]+@users\.noreply\.github\.com|noreply@github\.com)$'
+max_bytes=1048576
+nl='
+'
+
+# s***@domain: enough to recognise your own address, not enough to copy it.
+mask() {
+  printf '%s***@%s' "$(printf '%s' "${1%%@*}" | cut -c1)" "${1#*@}"
+}
+
+# Tabs as spaces, every run of spaces as one, and none at the ends: what
+# Pippa does to an author name, and git to the name on a commit.
+collapse() {
+  printf '%s\n' "$1" | tr '\t' ' ' | sed 's/  */ /g; s/^ //; s/ $//'
+}
+
+# Whether two names are the same name. Dots at the end do not count, because
+# some versions of git leave them off the name on a commit.
+same_name() {
+  [ "$(collapse "$1" | sed 's/[ .]*$//')" = "$(collapse "$2" | sed 's/[ .]*$//')" ]
+}
+
+# ── The pseudonym ────────────────────────────────────────────────────────────
+# `app_author_name` from the staged manifest.yaml, which is what the commit
+# will contain: the last top-level line, its value in quotes or bare, without
+# a comment. A value written any other way (on the next line, as a block, with
+# an escape in it) is not read, and counts as not set yet.
+pseudonym=$(git show :manifest.yaml 2>/dev/null | tr -d '\r' |
+  sed -n 's/^app_author_name[ 	]*:[ 	]*//p' | tail -n 1)
+case $pseudonym in
+  \"*) pseudonym=$(printf '%s\n' "$pseudonym" | sed -n 's/^"\([^"\\]*\)".*$/\1/p') ;;
+  \'*) pseudonym=$(printf '%s\n' "$pseudonym" | sed -n "s/^'\([^']*\)'.*\$/\1/p") ;;
+  *) pseudonym=$(printf '%s\n' "$pseudonym" | sed 's/^#.*$//; s/[ 	]#.*$//') ;;
+esac
+pseudonym=$(collapse "$pseudonym")
+case $pseudonym in
+  '~' | null | Null | NULL | '|'* | '>'*) pseudonym='' ;;
+esac
+
+# ── The name and address on the commit ──────────────────────────────────────
+identity=''
+names=''
+seen=''
+for role in AUTHOR COMMITTER; do
+  ident=$(git var "GIT_${role}_IDENT" 2>/dev/null)
+  who=$(printf '%s' "$role" | tr 'A-Z' 'a-z')
+  name=$(printf '%s\n' "$ident" | sed -n 's/^\(.*\) <[^>]*>.*$/\1/p')
+  if [ -n "$pseudonym" ] && [ -n "$ident" ] && ! same_name "$name" "$pseudonym"; then
+    names="${names}${names:+, }${who}"
+  fi
+  email=$(printf '%s\n' "$ident" | sed -n 's/^.*<\([^>]*\)>.*$/\1/p')
+  [ -n "$email" ] || continue
+  if printf '%s\n' "$email" | grep -qiE "$noreply_re"; then
+    continue
+  fi
+  [ "$email" = "$seen" ] && continue
+  seen=$email
+  identity="${identity}  ${who}: $(mask "$email")${nl}"
+done
+# Nothing to compare with yet: then at least not the name from this
+# computer's own git settings, which is usually the person's real one.
+no_local_name=''
+if [ -z "$pseudonym" ] && [ -z "$(git config --local user.name 2>/dev/null)" ]; then
+  no_local_name=yes
+fi
+
+# ── Email addresses in the files being committed ─────────────────────────────
+# The staged copy of each file, which is what the commit will contain, not the
+# one on disk. Binary files and files over a megabyte are skipped, as the
+# build skips them.
+files=''
+set -f
+IFS=$nl
+for path in $(git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR); do
+  size=$(git cat-file -s ":$path" 2>/dev/null) || continue
+  [ "$size" -le "$max_bytes" ] || continue
+  for hit in $(git show ":$path" 2>/dev/null | grep -nIoE "$email_re" |
+               grep -viE "$allowed_re" | grep -viE "$file_suffix_re"); do
+    files="${files}  ${path}:${hit%%:*}: $(mask "${hit#*:}")${nl}"
+  done
+done
+unset IFS
+set +f
+
+[ -z "$identity$names$no_local_name$files" ] && exit 0
+
+{
+  echo "Commit stopped: it would make an email address or a real name public."
+  if [ -n "$names" ]; then
+    echo
+    echo "The name on the commit ($names) is not your public author name,"
+    echo "app_author_name in manifest.yaml (\"$pseudonym\")."
+    cat <<'EOF'
+
+  Every commit shows its name, to anybody who can read the repository, for
+  good. Use the pseudonym for this repository:
+
+EOF
+    echo "    git config user.name \"$pseudonym\""
+    cat <<'EOF'
+
+  The name is read from the staged manifest.yaml: if you have just changed
+  app_author_name, stage manifest.yaml too (git add manifest.yaml).
+EOF
+  fi
+  if [ -n "$no_local_name" ]; then
+    echo
+    echo "No name is set for this repository."
+    cat <<'EOF'
+
+  The commit would show the name from this computer's own git settings,
+  usually a real one, to anybody who can read the repository, for good. Set
+  the pseudonym for this repository: the app_author_name you choose for
+  manifest.yaml (CLAUDE.md, step 1).
+
+    git config user.name "<pseudonym>"
+EOF
+  fi
+  if [ -n "$identity" ]; then
+    echo
+    echo "The address on the commit is not a GitHub no-reply address:"
+    printf '%s' "$identity"
+    cat <<'EOF'
+
+  Every commit shows it, to anybody who can read the repository, for good.
+  Use your GitHub no-reply address for this repository instead:
+
+    git config user.email "<id>+<login>@users.noreply.github.com"
+
+  `gh api user --jq '"\(.id)+\(.login)@users.noreply.github.com"'` prints
+  yours. Without gh: GitHub, Settings, Emails.
+EOF
+  fi
+  if [ -n "$files" ]; then
+    echo
+    echo "A file you are committing contains an email address:"
+    printf '%s' "$files"
+    cat <<'EOF'
+
+  Take the address out, stage the file again (git add <file>), and commit.
+  If it is an example, use one at example.com.
+EOF
+  fi
+} >&2
+exit 1

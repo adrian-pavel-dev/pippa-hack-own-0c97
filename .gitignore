@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.DS_Store
+.env
+vendor/
+*.whl
+
+# This repository is public: anything committed can be read by anyone, and it
+# stays in the git history after it is deleted. Keep keys and local files out.
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+credentials*.json
+secrets.json
+.netrc
+.pypirc
+.claude/settings.local.json
+env/
+.idea/
+.vscode/
+*.log
